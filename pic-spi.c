@@ -56,12 +56,12 @@
  *
  * Addr Bit Dir Description             Dir Description
  * -------------------------------------------------------------------------
- *    0   7 W   Chip Enable             R   IRQ Flag
+ *    0   7 W   Chip Enable             R   Transfer Complete
  *    0   6 W   Interrupt Enable        R   Interrupt Enable
- *    0   5 W   Reserved                R   Receive Data Available
+ *    0   5 W   Reserved                R   Reserved
  *    0   4 W   Fast RX Mode            R   Fast RX Mode
- *    0   3 W   Slave Select 1          R   Slave Select 1
- *    0   2 W   Slave Select 2          R   Slave Select 2
+ *    0   3 W   Tri-state MOSI          R   Tri-state MOSI
+ *    0   2 W   Reserved                R   Reserved
  *    0   1 W   Clock Polarity(1)       R   TX overrun error (clr on RDR read)
  *    0   0 W   Clock Phase(2)          R   RX overrun error (clr on RDR read)
  *    1   7 W   TDR Bit 0               R   RDR Bit 0
@@ -74,12 +74,13 @@
  *    1   0 W   TDR Bit 7               R   RDR Bit 7
  *    2 7-3 W   Clock Prescaler         R   Clock Prescaler
  *    2 2-0 W   Reserved                R   Reserved (FIFO count?)
- *    3 7-0 W   Reserved                R   Reserved
+ *    3 7-4 W   Reserved                R   Reserved
+ *    3 3-0 W   Slave Select            R   Slave Select
  *
  * (1) idle state of clock (0=low)
  * (2) SDO on idle to active (0) or active to idle (1)
  * 
- * Clock Prescaler Table (bits 4-0 of address 3):
+ * Clock Prescaler Table (bits 7-3 of address 2):
  * ----------------------------------------------
  *
  * Value        Clock Rate
@@ -155,7 +156,8 @@ typedef struct {
     uint8_t ctrl;                   // SPI control register (write only)
     uint8_t status;                 // SPI status register (read only)
     uint8_t rdr;                    // SPI receive data register (read only)
-    uint8_t ctrl2;                  // SPI clock prescaler (read/write)
+    uint8_t ctrl2;                  // SPI control register 2 (write only)
+    uint8_t ssel;					// SPI slave select register (read/write)
 } regs_spi_t;
 
 // Program constants
@@ -267,22 +269,6 @@ void __attribute__((interrupt, auto_psv, shadow)) _SPI1Interrupt(void)
         regs_spi.rdr = SPI1BUF;
     }
 
-    // Disable chip select on active SPI peripheral
-    switch (regs_spi.ctrl&0x0c) {
-        case 0:
-            LATAbits.LATA0 = 1;         // active low
-            break;
-        case 4:
-            LATAbits.LATA1 = 1;         // active low
-            break;
-        case 8:
-            LATBbits.LATB0 = 1;         // active low
-            break;
-        case 12:
-            LATBbits.LATB1 = 1;         // active low
-            break;
-    }
-
     // Update the following bits in the status register:
     // b7 - IRQ state
     // b5 - receive data available flag
@@ -333,21 +319,6 @@ void __attribute__((interrupt, auto_psv, shadow)) _PMPInterrupt(void)
         // to the transmit buffer (which will begin the transmission)
         // otherwise set TX overrun error bit.
         if (SPI1STATbits.SPITBF == 0) {
-            // Enable chip select on active SPI peripheral
-            switch (regs_spi.ctrl&0x0c) {
-                case 0:
-                    LATAbits.LATA0 = 0;     // active low
-                    break;
-                case 4:
-                    LATAbits.LATA1 = 0;     // active low
-                    break;
-                case 8:
-                    LATBbits.LATB0 = 0;     // active low
-                    break;
-                case 12:
-                    LATBbits.LATB1 = 0;     // active low
-                    break;
-            }
             SPI1BUF = PMDIN1 >> 8;
         }
         else {
@@ -371,25 +342,8 @@ void __attribute__((interrupt, auto_psv, shadow)) _PMPInterrupt(void)
             // b0 = clear RX overrun error bit
             regs_spi.status &= 0b01111100;
 
-            // Initiate another SPI transfer
+            // Initiate another SPI transfer with dummy data
             if (SPI1STATbits.SPITBF == 0) {
-                // Enable chip select on active SPI peripheral
-                switch (regs_spi.ctrl&0x0c) {
-                    case 0:
-                        LATAbits.LATA0 = 0;     // active low
-                        break;
-                    case 4:
-                        LATAbits.LATA1 = 0;     // active low
-                        break;
-                    case 8:
-                        LATBbits.LATB0 = 0;     // active low
-                        break;
-                    case 12:
-                        LATBbits.LATB1 = 0;     // active low
-                        break;
-                }
-
-                // Initiate transfer
                 SPI1BUF = 0;
             }
             else {
@@ -412,15 +366,19 @@ void __attribute__((interrupt, auto_psv, shadow)) _PMPInterrupt(void)
 
     // Process writes to address 2 (control register 2)
     if (PMSTATbits.IB2F) {
-        // Read in new value for low byte of control register 2
-        regs_spi.ctrl2 &= 0xff00;
-        regs_spi.ctrl2 |= PMDIN2 & 0xff;
+        // Read in new value for the control register 2
+        regs_spi.ctrl2 = PMDIN2;
     }
-    // Process writes to address 3 (reserved)
+    // Process writes to address 3 (slave select register)
     else if (PMSTATbits.IB3F) {
-        // Read in new value for address 3
-        regs_spi.ctrl2 &= 0x00ff;
-        regs_spi.ctrl2 |= PMDIN2 & 0xff00;
+        // Read in new value for the slave select register
+        regs_spi.ssel = PMDIN2 >> 8;
+		
+        // Update slave selects based on current register value
+        LATAbits.LATA0 = regs_spi.ssel & 0b0001;
+        LATAbits.LATA1 = regs_spi.ssel & 0b0010;
+        LATBbits.LATB0 = regs_spi.ssel & 0b0100;
+        LATBbits.LATB1 = regs_spi.ssel & 0b1000;
     }
 
     // Clear input buffer overflow status bit (otherwise an overflow will
@@ -435,11 +393,12 @@ int main(void)
 {
     uint16_t temp;
 
-    initHardware();                 // initialize PIC ports & peripherals
+    initHardware();                 // Initialize PIC ports & peripherals
 
     // Set initial values of variables
     regs_spi.ctrl = 0;              // Default control register
     regs_spi.ctrl2 = DEF_PRESCALE;  // SPI clock defaults to 1 MHz
+    regs_spi.ssel = 0;				// Default to no devices selected
     regs_spi.status = 0;            // Initial contents of status register
     regs_spi.rdr = 0;               // Initial contents of data register
 
