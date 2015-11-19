@@ -37,4 +37,5 @@ however.
 
 Bug fixes, comments, and suggestions are welcome.
 
+See https://github.com/jason6502/pic-spi/wiki for documentation of the PIC-SPI.
 See http://forum.6502.org/viewtopic.php?f=4&t=3511 for more details and ongoing discussion related to this project.
